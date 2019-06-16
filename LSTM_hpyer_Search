@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Apr 17 17:34:14 2019
+
+@author: guneykan
+"""
+
+
+  
+from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
+from hyperas import optim
+from hyperas.distributions import choice, uniform
+
+def data_process():
+    start_date = '1970-12-31'
+    end_date = '2019-04-12'
+    df = web.DataReader('AAPL', 'yahoo', start_date, end_date)
+    df = df.drop(["Adj Close"], axis=1)
+    df["mid"] = (df["High"]+df["Low"])/2
+    df["return_log"] = df["mid"].pct_change(1)
+    # Smooth data with Double exponential moving average
+    df["Close"] = talib.DEMA(np.array(df["Close"]), timeperiod=3)
+    df["High"] = talib.DEMA(np.array(df["High"]), timeperiod=3)
+    df["Low"] = talib.DEMA(np.array(df["Low"]), timeperiod=3)
+    df["Open"] = talib.DEMA(np.array(df["Open"]), timeperiod=3)
+    # Add tech indicators
+    df["dema"] = talib.DEMA(np.array(df["Close"]), timeperiod=30) #Double Exponential Moving Average
+    df["kama"] = talib.KAMA(np.array(df["Close"]), timeperiod=30) # Kaufman Adaptive Moving Average
+    df["trima"] = talib.TRIMA(np.array(df["Close"]), timeperiod=30) # Triple exponential
+    df["WMA"] = talib.WMA(np.array(df["Close"]), timeperiod=30) # Weighted moving average
+    df["adx"] = talib.ADX(np.array(df["High"]), np.array(df["Low"]), np.array(df["Close"]), timeperiod=14) 
+    df["adxr"] = talib.ADXR(np.array(df["High"]), np.array(df["Low"]), np.array(df["Close"]), timeperiod=14) 
+    df["apo"] = talib.APO(np.array(df["Close"]), fastperiod=12, slowperiod=26)
+    df["aroondown"], df["aroonup"] = talib.AROON(np.array(df["High"]), np.array(df["Low"]), timeperiod=14) 
+    df["aroonosc"] = talib.AROONOSC(np.array(df["High"]), np.array(df["Low"]), timeperiod=14)
+    df["bop"] = talib.BOP(np.array(df["Open"]), np.array(df["High"]), np.array(df["Low"]), np.array(df["Close"])) 
+    df["cmo"] = talib.CMO(np.array(df["Close"]), timeperiod=14) 
+    df["dx"] = talib.DX(np.array(df["High"]), np.array(df["Low"]), np.array(df["Close"]), timeperiod=14) 
+    df["mfi"] = talib.MFI(np.array(df["High"]), np.array(df["Low"]), np.array(df["Close"]), np.array(df["Volume"]), timeperiod=14) 
+    df["minus_di"] = talib.MINUS_DI(np.array(df["High"]), np.array(df["Low"]), np.array(df["Close"]), timeperiod=14) 
+    df["minus_dm"] = talib.MINUS_DM(np.array(df["High"]), np.array(df["Low"]), timeperiod=14)
+    df["plus_di"] = talib.PLUS_DI(np.array(df["High"]), np.array(df["Low"]), np.array(df["Close"]), timeperiod=14)
+    df["plus_dm"] = talib.PLUS_DM(np.array(df["High"]), np.array(df["Low"]), timeperiod=14)
+    df["ppo"] = talib.PPO(np.array(df["Close"]), fastperiod=10, slowperiod=20)
+    df["rsi"] = talib.RSI(np.array(df["Close"]), timeperiod=14)
+    df["slowk"], df["slowd"] = talib.STOCH(np.array(df["High"]), np.array(df["Low"]), np.array(df["Close"]), fastk_period=5, slowk_period=3, slowk_matype=0, slowd_period=3, slowd_matype=0)
+    df["macd"], df["macdsignal"], df["macdhist"] = talib.MACD(np.array(df["Close"]), fastperiod=12, slowperiod=26, signalperiod=9)
+    df["cci"] = talib.CCI(np.array(df["High"]), np.array(df["Low"]), np.array(df["Close"]), timeperiod=14)
+    df["mom20"] = talib.MOM(np.array(df["Close"]), timeperiod=20)
+    df["mom10"] = talib.MOM(np.array(df["Close"]), timeperiod=10)
+    df["ma20"] = talib.SMA(np.array(df["Close"]), timeperiod=20)
+    df["ma10"] = talib.SMA(np.array(df["Close"]), timeperiod=10)
+    df["roc"] = talib.ROC(np.array(df["Close"]), timeperiod=10)
+    df["ult"] = talib.ULTOSC(np.array(df["High"]), np.array(df["Low"]), np.array(df["Close"]), timeperiod1=7, timeperiod2=14, timeperiod3=28)
+    df["will"] = talib.WILLR(np.array(df["High"]), np.array(df["Low"]), np.array(df["Close"]), timeperiod=14)
+    df["return_1df"] = df["return_log"].shift(-1)
+    
+    df = df.dropna()
+    # Create a copy of data set for denoising
+    df_ = df.copy()
+    df_ = df_.drop(["return_1df"], axis=1)
+    
+    
+    # Train valid test split
+    train_df_ = df_.iloc[:9000]
+    test_df_ = df_.iloc[9000:9200]
+    train_df = df.iloc[:9000]
+    test_df = df.iloc[9000:9200]
+    out_of_sample = df.iloc[9200:9500]
+    out_of_sample_ = df_.iloc[9200:9500]
+    
+    
+    # Seperate features and target for training data
+    train_data_X = np.array(train_df_.values)
+    train_data_y = np.array(train_df["return_1df"].values)
+    # Seperate for valid data
+    test_data_X = np.array(test_df_.values)
+    test_data_y = np.array(test_df["return_1df"].values)
+    # Seperate for test data
+    X_out_sample = np.array(out_of_sample_.values)
+    y_out_sample = np.array(out_of_sample["return_1df"].values)
+    
+    
+    # Windowized normalization
+    smoothing_window_size = 600
+    
+    scaler_min = MinMaxScaler()
+    for di in range(0,9000,smoothing_window_size):
+        scaler_min.fit(train_data_X[di:di+smoothing_window_size,:])
+        train_data_X[di:di+smoothing_window_size,:] = scaler_min.transform(train_data_X[di:di+smoothing_window_size,:])
+    
+    # Scale features of test data
+    test_data_X = scaler_min.transform(test_data_X)
+    X_out_sample = scaler_min.transform(X_out_sample)
+    n_steps = 20
+    
+  
+    X_train = train_data_X
+    y_train = train_data_y
+    X_test = test_data_X
+    y_test = test_data_y
+    X_out_sample = X_out_sample
+    y_out_sample = y_out_sample
+    n_inputs = X_train.shape[1]
+    n_outputs = 1
+    X_test = X_test.reshape((-1, n_steps, n_inputs))
+    y_test = y_test.reshape((-1, n_steps, n_outputs))    
+    X_out_sample = X_out_sample.reshape((-1, n_steps, n_inputs))
+    y_out_sample = y_out_sample.reshape((-1, n_steps, n_outputs))
+    return X_train, y_train, X_test, y_test, X_out_sample, y_out_sample
+
+X_train, y_train, X_test, y_test, X_out_sample, y_out_sample = data_process()
+
+
+space = {"n_layers": hp.choice("n_layers", [2, 3, 4, 5, 6, 7]), 
+         "num_nodes": hp.choice("num_nodes", [20, 40, 100, 150, 200, 250, 300, 350, 400, 500]), 
+         "learning_rate": hp.choice("learning_rate", [0.1, 0.005, 0.001, 0.0005, 0.0001]), 
+         "activation": hp.choice("activation", [tf.nn.elu, tf.nn.relu, tf.nn.tanh, tf.nn.leaky_relu]), 
+         "batch_size": hp.choice("batch_size", [40, 60, 100, 120, 180, 200]), 
+         "threshold": hp.choice("threshold", [0.1, 0.2, 0.3, 0.4, 0.5, 1, 5, 10]), 
+         "optimizer": hp.choice("optimizer", [tf.train.AdamOptimizer, tf.train.RMSPropOptimizer])}
+
+
+def model(params):
+    X_train, y_train, X_test, y_test, X_out_sample, y_out_sample = data_process()
+    print ('Params testing: ', params)
+    tf.reset_default_graph()
+    tf.set_random_seed(123)
+    n_steps = 20
+    n_inputs = X_train.shape[1]
+    num_nodes = params["num_nodes"]
+    n_layers = params["n_layers"]
+    n_outputs = 1
+    
+    X = tf.placeholder(tf.float32, [None, n_steps, n_inputs])
+    y = tf.placeholder(tf.float32, [None, n_steps, n_outputs])
+    
+    cells = [tf.nn.rnn_cell.LSTMCell(num_units=num_nodes, activation = params["activation"], 
+                                     use_peepholes=True) for layer in range(n_layers)]
+    multi_layer_cell = tf.nn.rnn_cell.MultiRNNCell(cells)
+    cell = tf.contrib.rnn.OutputProjectionWrapper(multi_layer_cell, output_size=n_outputs)
+    outputs, states = tf.nn.dynamic_rnn(cell, X, dtype=tf.float32)
+    loss = tf.reduce_mean(tf.square(outputs - y))
+    optimizer = params["optimizer"](learning_rate=params["learning_rate"])
+    threshold = params["threshold"]
+    grads_and_vars = optimizer.compute_gradients(loss)
+    capped_gvs = [(tf.clip_by_value(grad, -threshold, threshold), var) for grad, var in grads_and_vars]
+    training_op = optimizer.apply_gradients(capped_gvs)
+
+    init = tf.global_variables_initializer()
+    saver = tf.train.Saver()
+
+
+    max_checks_without_progress = 20
+    checks_without_progress = 0
+    best_loss = np.infty
+    n_iterations = 100
+    batch_size = params["batch_size"]
+    
+    with tf.Session() as sess:
+        init.run()
+        for iteration in range(n_iterations):
+            for X_batch, y_batch in shuffle_batch(X_train, y_train, batch_size):
+                X_batch = X_batch.reshape((-1, n_steps, n_inputs))
+                y_batch = y_batch.reshape((-1, n_steps, n_outputs))
+                sess.run(training_op, feed_dict={X: X_batch, y: y_batch})
+            mse = loss.eval(feed_dict={X: X_batch, y: y_batch})
+            mse_ = loss.eval(feed_dict={X: X_test, y: y_test})
+            print(iteration, "\tMSE:", mse, " MSE_TEST", mse_)
+            if mse_ < best_loss: # adding stop loss
+                save_path = saver.save(sess, "hyperopt/LSTM_hypersearch")
+                best_loss = mse_
+                checks_without_progress = 0
+            else:
+                checks_without_progress += 1
+                if checks_without_progress > max_checks_without_progress:
+                    print("Early stopping!")
+                    break
+    
+    loss_min = best_loss
+    print('Valid Loss:', loss_min)
+    return {'loss': loss_min, 'status': STATUS_OK}
+
+trials = Trials()
+best = fmin(model, space, algo=tpe.suggest, max_evals = 2, trials=trials)
+space
+print(trials)
+
